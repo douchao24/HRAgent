@@ -1,4 +1,5 @@
 import os
+from tkinter import constants
 from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_unstructured import UnstructuredLoader
@@ -12,10 +13,12 @@ from langchain_classic.indexes import SQLRecordManager, index
 
 # 1. 导入监听模块（核心！）
 from watch_docs import start_file_monitor
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 
 
 # 从环境变量读取 API Key（建议在系统环境变量中设置 OPENAI_API_KEY）
-api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxx"
+api_key = os.getenv("OPENAI_API_KEY", "sk-xxxxxxxxxxxxxxxxxxx")
 if not api_key:
     raise ValueError("请设置环境变量 OPENAI_API_KEY")
 
@@ -219,33 +222,33 @@ def setup_rag_chain(llm=None):
 # 主程序入口
 # ============================================================
 
-if __name__ == "__main__":
-    PDF_PATH = "./docs/电商客服手册_含图片版.pdf"
+app = FastAPI(title="RAG API")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-    # ✅ 修复5: 每次启动都走增量索引流程，无需手动判断
-    # index() 会自动跳过未变化的文档，开销极小
-    if os.path.exists(PDF_PATH):
-        print(f"正在索引知识库: {PDF_PATH}")
-        build_knowledge_base(PDF_PATH)
-    else:
-        print(f"[警告] PDF 文件不存在: {PDF_PATH}")
-        print("请确认文件路径后重试。如果已有向量库数据，仍可尝试查询。")
-
+@app.get("/chat")
+def chat(question: str = Query(...)):
     try:
-        rag_chain = setup_rag_chain()
+      rag_chain = setup_rag_chain()
+      response = rag_chain.invoke(question)
+      answer = str(response)
+      return {
+        "code": 200,
+        "question": question,
+        "answer": answer
+      }
     except Exception as e:
-        print(f"RAG链初始化失败: {e}")
-        exit(1)
+        return {"code": 500, "error": str(e)}
 
-    print("\n知识库就绪，开始问答（输入 'exit' 退出）")
-    while True:
-        user_question = input("\n请输入问题: ").strip()
-        if user_question.lower() == 'exit':
-            break
-        if not user_question:
-            continue
-        try:
-            response = rag_chain.invoke(user_question)
-            print(f"\n回答: {response}")
-        except Exception as e:
-            print(f"生成回答时出错: {e}")
+
+# 刷新重建知识库
+@app.get("/refresh")
+def refresh(pdf_name: str = Query(..., description="你的PDF文件名")):
+    try:
+        pdf_path = os.path.join("docs", pdf_name)
+        if not os.path.exists(pdf_path):
+            return {"code": 404, "error": f"文件不存在: {pdf_path}"}
+        
+        build_knowledge_base(pdf_path)
+        return {"code": 200, "msg": "知识库重建成功"}
+    except Exception as e:
+        return {"code": 500, "error": str(e)}
